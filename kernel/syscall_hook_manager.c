@@ -281,13 +281,6 @@ int ksu_handle_init_mark_tracker(const char __user **filename_user)
 
     return 0;
 }
-#ifdef CONFIG_KSU_MANUAL_SU
-#include "manual_su.h"
-static inline void ksu_handle_task_alloc(struct pt_regs *regs)
-{
-    ksu_try_escalate_for_uid(current_uid().val);
-}
-#endif
 
 #ifdef CONFIG_HAVE_SYSCALL_TRACEPOINTS
 // Generic sys_enter handler that dispatches to specific handlers
@@ -336,12 +329,6 @@ static void ksu_sys_enter_handler(void *data, struct pt_regs *regs, long id)
             ksu_handle_setresuid(ruid, euid, suid);
             return;
         }
-
-#ifdef CONFIG_KSU_MANUAL_SU
-        // Handle task_alloc via clone/fork
-        if (id == __NR_clone || id == __NR_clone3)
-            return ksu_handle_task_alloc(regs);
-#endif
     }
 }
 #endif

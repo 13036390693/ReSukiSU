@@ -27,11 +27,6 @@
 #include "dynamic_manager.h"
 
 #include "sulog.h"
-#ifdef CONFIG_KSU_MANUAL_SU
-#include "manual_su.h"
-#endif
-
-bool ksu_uid_scanner_enabled = false;
 
 // Permission check functions
 bool only_manager(void)
@@ -63,17 +58,6 @@ bool allowed_for_su(void)
                                       is_allowed);
 #endif
     return is_allowed;
-}
-
-static void init_uid_scanner(void)
-{
-    ksu_throne_comm_load_state();
-    if (ksu_uid_scanner_enabled) {
-        int ret = ksu_throne_comm_init();
-        if (ret != 0) {
-            pr_err("Failed to initialize throne communication: %d\n", ret);
-        }
-    }
 }
 
 static int do_grant_root(void __user *arg)
@@ -121,7 +105,6 @@ static int do_report_event(void __user *arg)
             post_fs_data_lock = true;
             pr_info("post-fs-data triggered\n");
             on_post_fs_data();
-            init_uid_scanner();
 #if __SULOG_GATE
             ksu_sulog_init();
 #endif
@@ -722,113 +705,6 @@ static int do_get_managers(void __user *arg)
     return 0;
 }
 
-static int do_enable_uid_scanner(void __user *arg)
-{
-    struct ksu_enable_uid_scanner_cmd cmd;
-
-    if (copy_from_user(&cmd, arg, sizeof(cmd))) {
-        pr_err("enable_uid_scanner: copy_from_user failed\n");
-        return -EFAULT;
-    }
-
-    switch (cmd.operation) {
-    case UID_SCANNER_OP_GET_STATUS: {
-        bool status = ksu_uid_scanner_enabled;
-        if (copy_to_user((void __user *)cmd.status_ptr, &status,
-                         sizeof(status))) {
-            pr_err("enable_uid_scanner: copy status failed\n");
-            return -EFAULT;
-        }
-        break;
-    }
-    case UID_SCANNER_OP_TOGGLE: {
-        bool enabled = cmd.enabled;
-
-        if (enabled == ksu_uid_scanner_enabled) {
-            pr_info("enable_uid_scanner: no need to change, already %s\n",
-                    enabled ? "enabled" : "disabled");
-            break;
-        }
-
-        if (enabled) {
-            // Enable UID scanner
-            int ret = ksu_throne_comm_init();
-            if (ret != 0) {
-                pr_err("enable_uid_scanner: failed to initialize: %d\n", ret);
-                return -EFAULT;
-            }
-            pr_info("enable_uid_scanner: enabled\n");
-        } else {
-            // Disable UID scanner
-            ksu_throne_comm_exit();
-            pr_info("enable_uid_scanner: disabled\n");
-        }
-
-        ksu_uid_scanner_enabled = enabled;
-        ksu_throne_comm_save_state();
-        break;
-    }
-    case UID_SCANNER_OP_CLEAR_ENV: {
-        // Clear environment (force exit)
-        ksu_throne_comm_exit();
-        ksu_uid_scanner_enabled = false;
-        ksu_throne_comm_save_state();
-        pr_info("enable_uid_scanner: environment cleared\n");
-        break;
-    }
-    default:
-        pr_err("enable_uid_scanner: invalid operation\n");
-        return -EINVAL;
-    }
-
-    return 0;
-}
-
-#ifdef CONFIG_KSU_MANUAL_SU
-static bool system_uid_check(void)
-{
-    return current_uid().val <= 2000;
-}
-
-static int do_manual_su(void __user *arg)
-{
-    struct ksu_manual_su_cmd cmd;
-    struct manual_su_request request;
-    int res;
-
-    if (copy_from_user(&cmd, arg, sizeof(cmd))) {
-        pr_err("manual_su: copy_from_user failed\n");
-        return -EFAULT;
-    }
-
-    pr_info("manual_su request, option=%d, uid=%d, pid=%d\n", cmd.option,
-            cmd.target_uid, cmd.target_pid);
-
-    memset(&request, 0, sizeof(request));
-    request.target_uid = cmd.target_uid;
-    request.target_pid = cmd.target_pid;
-
-    if (cmd.option == MANUAL_SU_OP_GENERATE_TOKEN ||
-        cmd.option == MANUAL_SU_OP_ESCALATE) {
-        memcpy(request.token_buffer, cmd.token_buffer,
-               sizeof(request.token_buffer));
-    }
-
-    res = ksu_handle_manual_su_request(cmd.option, &request);
-
-    if (cmd.option == MANUAL_SU_OP_GENERATE_TOKEN && res == 0) {
-        memcpy(cmd.token_buffer, request.token_buffer,
-               sizeof(cmd.token_buffer));
-        if (copy_to_user(arg, &cmd, sizeof(cmd))) {
-            pr_err("manual_su: copy_to_user failed\n");
-            return -EFAULT;
-        }
-    }
-
-    return res;
-}
-#endif
-
 // IOCTL handlers mapping table
 static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
     { .cmd = KSU_IOCTL_GRANT_ROOT,
@@ -923,16 +799,6 @@ static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
       .name = "GET_MANAGERS",
       .handler = do_get_managers,
       .perm_check = manager_or_root },
-    { .cmd = KSU_IOCTL_ENABLE_UID_SCANNER,
-      .name = "SET_ENABLE_UID_SCANNER",
-      .handler = do_enable_uid_scanner,
-      .perm_check = manager_or_root },
-#ifdef CONFIG_KSU_MANUAL_SU
-    { .cmd = KSU_IOCTL_MANUAL_SU,
-      .name = "MANUAL_SU",
-      .handler = do_manual_su,
-      .perm_check = system_uid_check },
-#endif
 #ifdef CONFIG_KPM
     { .cmd = KSU_IOCTL_KPM,
       .name = "KPM_OPERATION",
